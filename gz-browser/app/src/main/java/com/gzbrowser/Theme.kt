@@ -28,6 +28,23 @@ object Theme {
             h(0x3A1A20), h(0xF29AA5), h(0x40202A), h(0x4A2029), h(0xF0505F))
     )
 
+    /** One editable theme color. Overrides are stored in prefs as "tc_<key>" (0 = use the preset's own color). */
+    class Slot(val key: String, val label: String, val sub: String)
+
+    val slots = listOf(
+        Slot("bg", "Background", "Screen and page background"),
+        Slot("surface", "Panels", "Menus, dialogs and cards"),
+        Slot("dock", "Dock", "Bottom bar"),
+        Slot("border", "Borders", "Outlines of panels"),
+        Slot("text", "Text", "Main text"),
+        Slot("muted", "Muted text", "Hints and subtitles"),
+        Slot("ice", "Highlights", "Icons and selected items"),
+        Slot("tile", "Tiles", "Bubble and tool tiles"),
+        Slot("tile2", "Tiles (second shade)", "Pressed and alternate tiles"),
+        Slot("edge", "Tile outline", "Outline of tiles"),
+        Slot("div", "Dividers", "Lines between rows")
+    )
+
     class Swatch(val name: String, val color: Int)
 
     val swatches = listOf(

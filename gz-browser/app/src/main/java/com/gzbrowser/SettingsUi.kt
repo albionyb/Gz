@@ -314,11 +314,17 @@ internal fun MainActivity.pagePrivacy(list: LinearLayout) {
 internal fun MainActivity.pageAppearance(list: LinearLayout) {
     header(list, "Theme")
     val p = Theme.presets[presetIndex()]
-    rowBase(list, "Color theme", p.name, accentDot(p.surface)) { themeDialog() }
+    rowBase(list, "Color theme", p.name + if (anyCustomColors()) " (customized)" else "", accentDot(p.surface)) { themeDialog() }
     val custom = prefs.getInt("theme_accent", 0)
     val accName = if (custom == 0) "Theme default" else
         (Theme.swatches.firstOrNull { it.color == custom }?.name ?: String.format("#%06X", custom and 0xFFFFFF))
     rowBase(list, "Accent color", accName, accentDot(C_ACCENT)) { accentDialog() }
+    header(list, "Custom colors")
+    Theme.slots.forEach { sl ->
+        val c = prefs.getInt("tc_${sl.key}", 0)
+        rowBase(list, sl.label, if (c == 0) sl.sub else String.format("Custom #%06X", c and 0xFFFFFF), accentDot(themeColorOf(sl.key))) { pickThemeColor(sl) }
+    }
+    actionRow(list, "Reset all colors", "Back to the chosen theme's own colors") { resetThemeColors() }
 }
 
 internal fun MainActivity.pageScreen(list: LinearLayout) {

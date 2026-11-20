@@ -33,7 +33,8 @@ A lightweight Android browser made for playing Granblue Fantasy. It is built on 
 - Auto-hide address bar, full screen mode and hide-all-bars mode
 - Orientation lock and keep-screen-on
 - "Press back twice to exit" guard to prevent accidental exits mid-battle
-- Six color themes plus a custom accent color
+- Six color themes, each editable color by color with a color wheel (Settings > Appearance), plus a custom accent color
+- Color wheel also for profile colors, tab group colors and bookmark/folder colors
 
 ## Build
 

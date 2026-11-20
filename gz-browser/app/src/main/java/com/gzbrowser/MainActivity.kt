@@ -1182,10 +1182,23 @@ class MainActivity : Activity() {
             val ti = TOOLS.indexOfFirst { "tool:" + it.first == existing?.url }
             setSelection(if (ti >= 0) ti else 0)
         }
-        val colorSpin = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, COLOR_NAMES)
-            val ci = COLORS.indexOf(existing?.color ?: -1)
-            setSelection(if (ci >= 0) ci else 0)
+        var pickedColor = existing?.color ?: COLORS[0]
+        val colorDot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(pickedColor); setStroke(dp(2), Color.WHITE) }
+        }
+        val colorRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(10), dp(4), dp(10))
+            addView(TextView(this@MainActivity).apply {
+                text = if (isFolder) "Folder color" else "Color"; textSize = 16f; setTextColor(Color.WHITE)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(colorDot, LinearLayout.LayoutParams(dp(30), dp(30)))
+            setOnClickListener {
+                colorDialog(if (isFolder) "Folder color" else "Bookmark color", pickedColor) { c ->
+                    pickedColor = c
+                    (colorDot.background as GradientDrawable).setColor(c)
+                }
+            }
         }
         val folders = store.folders()
         val placeSpin = Spinner(this).apply {
@@ -1229,7 +1242,7 @@ class MainActivity : Activity() {
             setTextColor(0xFF9E9E9E.toInt()); textSize = 13f; setPadding(0, dp(6), 0, dp(6))
         })
         if (isTool) box.addView(toolSpin) else if (!isFolder && fixedUrl == null) box.addView(url)
-        box.addView(colorSpin)
+        box.addView(colorRow)
         if (!isFolder) { box.addView(placeSpin); profSpin?.let { box.addView(it) } }
         AlertDialog.Builder(this)
             .setTitle(
@@ -1251,7 +1264,7 @@ class MainActivity : Activity() {
                     if (isTool) toolName(toolKey).take(10) else BmIcons.short(pickedIcon).ifEmpty { "?" }
                 }
                 val u = if (isTool) "tool:$toolKey" else fixedUrl ?: url.text.toString().trim()
-                val c = COLORS[colorSpin.selectedItemPosition]
+                val c = pickedColor
                 val target: MutableList<Bookmark> =
                     if (isFolder || placeSpin.selectedItemPosition == 0) store.items
                     else folders[placeSpin.selectedItemPosition - 1].children ?: store.items
@@ -1650,9 +1663,7 @@ class MainActivity : Activity() {
                         0 -> nameDialog("Rename group", g.name) { nn ->
                             if (tabGroups.nameTaken(nn, g)) toast("That name is taken") else { g.name = nn; changed() }
                         }
-                        1 -> AlertDialog.Builder(this).setTitle("Color").setItems(TabGroupStore.NAMES) { _, c ->
-                            g.color = TabGroupStore.PALETTE[c]; changed()
-                        }.showT()
+                        1 -> colorDialog("Group color", g.color) { g.color = it; changed() }
                         2 -> if (n == 0) toast("No tabs in this group")
                             else confirm("Close $n tab(s) in \"${g.name}\"?", "Close") {
                                 tabs.filter { it.group == g.id }.forEach { closeTab(it) }
@@ -2515,7 +2526,7 @@ class MainActivity : Activity() {
     fun profileOptions(p: BrowserProfile) {
         AlertDialog.Builder(this).setTitle(p.name)
             .setItems(arrayOf("Rename", "Change color", "Delete and wipe its logins")) { _, w ->
-                if (w == 1) pickColor(ProfileColors.names, ProfileColors.colors) { p.color = it; profiles.save(); refreshSettings() }
+                if (w == 1) colorDialog("Profile color", p.color) { p.color = it; profiles.save(); refreshSettings() }
                 else if (w == 0) {
                     val input = EditText(this).apply {
                         setSingleLine(); setText(p.name)
@@ -2548,7 +2559,7 @@ class MainActivity : Activity() {
     fun mainOptions() {
         AlertDialog.Builder(this).setTitle(profiles.mainName)
             .setItems(arrayOf("Rename", "Change color")) { _, w ->
-                if (w == 1) pickColor(ProfileColors.mainNames, ProfileColors.mainColors) { profiles.recolorMain(it); refreshSettings() }
+                if (w == 1) colorDialog("Main color", profiles.mainColor) { profiles.recolorMain(it); refreshSettings() }
                 else {
                     val input = EditText(this).apply {
                         setSingleLine(); setText(profiles.mainName)
@@ -2564,11 +2575,6 @@ class MainActivity : Activity() {
                         }.showT()
                 }
             }.showT()
-    }
-
-    private fun pickColor(names: Array<String>, colors: IntArray, onPick: (Int) -> Unit) {
-        AlertDialog.Builder(this).setTitle("Color")
-            .setItems(names) { _, i -> onPick(colors[i]) }.showT()
     }
 
     // ---------- Gestures ----------
@@ -2820,9 +2826,10 @@ class MainActivity : Activity() {
     /** Loads the chosen preset (+ optional custom accent) into the C_* colors. */
     private fun applyTheme() {
         val p = Theme.presets[presetIndex()]
-        C_BG = p.bg; C_SURFACE = p.surface; C_DOCK = p.dock; C_BORDER = p.border
-        C_ICE = p.ice; C_MUTED = p.muted; C_TEXT = p.text
-        C_TILE = p.tile; C_EDGE = p.edge; C_DIV = p.div; C_TILE2 = p.tile2
+        fun ov(k: String, d: Int): Int = prefs.getInt("tc_$k", 0).let { if (it == 0) d else it }
+        C_BG = ov("bg", p.bg); C_SURFACE = ov("surface", p.surface); C_DOCK = ov("dock", p.dock); C_BORDER = ov("border", p.border)
+        C_ICE = ov("ice", p.ice); C_MUTED = ov("muted", p.muted); C_TEXT = ov("text", p.text)
+        C_TILE = ov("tile", p.tile); C_EDGE = ov("edge", p.edge); C_DIV = ov("div", p.div); C_TILE2 = ov("tile2", p.tile2)
         val custom = prefs.getInt("theme_accent", 0)
         C_ACCENT = if (custom == 0) p.accent else custom
         window.statusBarColor = C_BG
@@ -2857,6 +2864,36 @@ class MainActivity : Activity() {
 
     fun accentDot(color: Int): View = circle(color, 26)
 
+    /** The color a theme slot has right now (custom or the preset's own). */
+    fun themeColorOf(key: String): Int = when (key) {
+        "bg" -> C_BG; "surface" -> C_SURFACE; "dock" -> C_DOCK; "border" -> C_BORDER
+        "text" -> C_TEXT; "muted" -> C_MUTED; "ice" -> C_ICE; "tile" -> C_TILE
+        "tile2" -> C_TILE2; "edge" -> C_EDGE; "div" -> C_DIV
+        else -> C_ACCENT
+    }
+
+    fun anyCustomColors(): Boolean =
+        Theme.slots.any { prefs.getInt("tc_${it.key}", 0) != 0 } || prefs.getInt("theme_accent", 0) != 0
+
+    fun pickThemeColor(s: Theme.Slot) {
+        colorDialog(s.label, themeColorOf(s.key), "Theme default", {
+            prefs.edit().remove("tc_${s.key}").apply(); reTheme()
+        }) { c ->
+            prefs.edit().putInt("tc_${s.key}", c).apply(); reTheme()
+        }
+    }
+
+    private fun clearSlotOverrides(ed: SharedPreferences.Editor) {
+        Theme.slots.forEach { ed.remove("tc_${it.key}") }
+    }
+
+    fun resetThemeColors() {
+        val ed = prefs.edit()
+        clearSlotOverrides(ed)
+        ed.putInt("theme_accent", 0).apply()
+        reTheme()
+    }
+
     fun themeDialog() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(4)) }
         var dlg: AlertDialog? = null
@@ -2869,7 +2906,10 @@ class MainActivity : Activity() {
                     cornerRadius = dp(14).toFloat(); setColor(p.bg)
                     setStroke(if (sel) dp(3) else dp(1), if (sel) C_ACCENT else p.border)
                 }
-                setOnClickListener { prefs.edit().putInt("theme_preset", i).apply(); dlg?.dismiss(); reTheme() }
+                setOnClickListener {
+                    val ed = prefs.edit(); clearSlotOverrides(ed); ed.putInt("theme_preset", i).apply()
+                    dlg?.dismiss(); reTheme()
+                }
             }
             row.addView(TextView(this).apply { text = p.name; textSize = 16f; setTextColor(p.text) },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -2885,39 +2925,11 @@ class MainActivity : Activity() {
     }
 
     fun accentDialog() {
-        val cur = prefs.getInt("theme_accent", 0)
-        var picked = cur
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
-        val hex = EditText(this).apply {
-            hint = "#RRGGBB"; setSingleLine(); setTextColor(Color.WHITE); setHintTextColor(0xFF888888.toInt())
-            if (cur != 0) setText(String.format("#%06X", cur and 0xFFFFFF))
+        colorDialog("Accent color", C_ACCENT, "Theme default", {
+            prefs.edit().putInt("theme_accent", 0).apply(); reTheme()
+        }) { c ->
+            prefs.edit().putInt("theme_accent", c).apply(); reTheme()
         }
-        val dots = mutableListOf<Pair<View, Int>>()
-        fun mark() = dots.forEach { (v, c) ->
-            (v.background as GradientDrawable).setStroke(if (c == picked) dp(3) else dp(1), if (c == picked) Color.WHITE else C_BORDER)
-        }
-        Theme.swatches.chunked(5).forEach { group ->
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_HORIZONTAL }
-            group.forEach { sw ->
-                val dot = circle(sw.color, 42, C_BORDER, 1)
-                (dot.layoutParams as LinearLayout.LayoutParams).setMargins(dp(6), dp(6), dp(6), dp(6))
-                dot.setOnClickListener { picked = sw.color; hex.setText(String.format("#%06X", sw.color and 0xFFFFFF)); mark() }
-                dots += dot to sw.color
-                row.addView(dot)
-            }
-            box.addView(row)
-        }
-        mark()
-        box.addView(hex, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
-        AlertDialog.Builder(this).setTitle("Accent color").setView(box)
-            .setNeutralButton("Theme default") { _, _ -> prefs.edit().putInt("theme_accent", 0).apply(); reTheme() }
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Apply") { _, _ ->
-                val t = hex.text.toString().trim().removePrefix("#")
-                val v = if (t.length == 6) t.toLongOrNull(16) else null
-                if (v == null) toast("Enter a color like #3FB7E8")
-                else { prefs.edit().putInt("theme_accent", 0xFF000000.toInt() or v.toInt()).apply(); reTheme() }
-            }.showT()
     }
 
     /** Dialogs built with AlertDialog get the theme colors (the XML style is fixed). */
