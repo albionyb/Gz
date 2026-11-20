@@ -869,10 +869,10 @@ class MainActivity : Activity() {
 
     // ---------- Bookmark bubbles ----------
 
-    /** Navy rounded tile with a light-blue border holding one of the custom vector icons. */
+    /** Rounded tile (theme colors) holding one of the custom vector icons, which are recolored to the current theme and accent. */
     fun iconTile(res: Int, sizeDp: Int, folder: Boolean = false, selected: Boolean = false): ImageView =
         ImageView(this).apply {
-            setImageResource(res)
+            setImageDrawable(AdaptiveIcon.of(context, res))
             scaleType = ImageView.ScaleType.FIT_CENTER
             val pad = dp(sizeDp) * 18 / 100
             setPadding(pad, pad, pad, pad)
@@ -1322,7 +1322,7 @@ class MainActivity : Activity() {
                     }
                     setOnClickListener { dlg.dismiss(); item.act() }
                 }
-                cell.addView(ImageView(this).apply { setImageResource(item.icon) }, LinearLayout.LayoutParams(dp(30), dp(30)))
+                cell.addView(ImageView(this).apply { setImageDrawable(AdaptiveIcon.of(context, item.icon)) }, LinearLayout.LayoutParams(dp(30), dp(30)))
                 cell.addView(TextView(this).apply {
                     text = item.title; textSize = 12f; setTextColor(C_TEXT); gravity = Gravity.CENTER
                     setPadding(0, dp(6), 0, 0)

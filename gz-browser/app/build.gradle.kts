@@ -53,4 +53,5 @@ kotlin {
 dependencies {
     // Multi-profile API (separate cookies / logins per profile)
     implementation("androidx.webkit:webkit:1.12.1")
+    implementation("androidx.core:core:1.13.1")   // PathParser, used by AdaptiveIcon
 }
