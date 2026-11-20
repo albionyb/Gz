@@ -1,7 +1,14 @@
 name: Build APK
 on:
   push:
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
+    inputs:
+      notes:
+        description: 'Release notes'
+        required: false
+        default: ''
 
 permissions:
   contents: write   # needed to create releases
@@ -102,11 +109,12 @@ jobs:
         run: echo "VER=$(printf '0.0.%02d' ${{ github.run_number }})" >> "$GITHUB_ENV"
 
       - name: Publish release
-        if: github.ref_type == 'branch'
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ inputs.notes }}
         run: |
           cp ${{ steps.loc.outputs.dir }}/app/build/outputs/apk/release/*.apk GzBrowser.apk
           gh release create "v$VER" GzBrowser.apk \
             --title "Gz Browser v$VER" \
-            --notes "Automatic build from commit ${GITHUB_SHA::7}"
+            --notes "${NOTES:-Build from commit ${GITHUB_SHA::7}}"
