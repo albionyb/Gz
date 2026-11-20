@@ -1,0 +1,112 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Phone-friendly: if you uploaded the project as a .zip, unpack it first
+      - name: Unpack uploaded zip
+        run: |
+          for z in $(find . -maxdepth 1 -name '*.zip'); do
+            echo "Unzipping $z"
+            unzip -oq "$z" -d _src
+          done
+
+      # Finds the Android project (settings.gradle.kts) in the repo root or any subfolder
+      - name: Locate project folder
+        id: loc
+        run: |
+          # An uploaded zip (unpacked into _src) wins over any copy of the source already committed in the repo
+          search=.
+          if [ -d _src ]; then search=_src; fi
+          f=$(find "$search" -name settings.gradle.kts -not -path './.git/*' | head -n1)
+          if [ -z "$f" ]; then echo "settings.gradle.kts not found"; exit 1; fi
+          dir=$(dirname "$f")
+          echo "Project folder: $dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      # Commits the unpacked source files into the repo so GitHub can read them
+      # (it can't look inside a .zip, so the language bar stays empty otherwise).
+      # Commits made with the built-in token don't start another build.
+      - name: Save source files into the repo
+        if: github.ref_type == 'branch'
+        continue-on-error: true
+        run: |
+          if [ ! -d _src ]; then echo "No uploaded zip, nothing to save"; exit 0; fi
+          src="${{ steps.loc.outputs.dir }}"
+          name=$(basename "$src")
+          if [ "$name" = "_src" ]; then name="gz-browser"; fi   # the zip had no top folder
+          rm -rf "$name"
+          mkdir -p "$name"
+          cp -a "$src"/. "$name"/
+          rm -rf "$name/.github" "$name/build" "$name/app/build" "$name/.gradle"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A "$name"
+          if git diff --cached --quiet; then echo "Source already up to date"; exit 0; fi
+          git commit -m "Update source files from uploaded zip"
+          git push
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # The runner already ships the Android SDK; the setup-android action is broken right now,
+      # so just accept the licenses so Gradle can fetch anything missing.
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Fetch ad blocklist
+        run: bash "${{ steps.loc.outputs.dir }}/scripts/fetch-blocklist.sh"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+          build-root-directory: ${{ steps.loc.outputs.dir }}
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          for v in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then echo "Missing GitHub secret: $v"; exit 1; fi
+          done
+          printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.p12"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        working-directory: ${{ steps.loc.outputs.dir }}
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GzBrowser-apk
+          path: ${{ steps.loc.outputs.dir }}/app/build/outputs/apk/release/*.apk
+
+      - name: Version number
+        run: echo "VER=$(printf '0.0.%02d' ${{ github.run_number }})" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp ${{ steps.loc.outputs.dir }}/app/build/outputs/apk/release/*.apk GzBrowser.apk
+          gh release create "v$VER" GzBrowser.apk \
+            --title "Gz Browser v$VER" \
+            --notes "Automatic build from commit ${GITHUB_SHA::7}"
