@@ -6,7 +6,7 @@ A lightweight Android browser made for playing Granblue Fantasy. It is built on 
 
 **Requires:** Android 8.0 or newer.
 
-1. Open the [Releases page](https://github.com/albionyb/Gz/releases) on your phone and download `GzBrowser.apk` from the latest release.
+1. Open the [Releases page](https://github.com/albionyb/Gz/releases) and download `GzBrowser.apk` from the latest release.
 2. Open the downloaded file. If Android blocks it, tap **Settings** and allow **Install unknown apps** for your browser or file manager, then go back and tap **Install**.
 3. If Play Protect warns about an unknown app, tap **More details > Install anyway**. The warning appears because the app isn't on Google Play.
 4. Open **Gz Browser**.
