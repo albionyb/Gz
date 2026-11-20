@@ -243,7 +243,7 @@ internal fun MainActivity.settingsHub(list: LinearLayout) {
         when {
             !profilesSupported() -> "Needs a newer Android System WebView"
             profiles.items.isEmpty() -> "Separate logins, e.g. a second account"
-            else -> "Main + ${profiles.items.joinToString { it.name }}"
+            else -> "${profiles.mainName} + ${profiles.items.joinToString { it.name }}"
         }
     ) { goSettings("profiles") }
     actionRow(list, "Privacy & safety", "Ad blocking ${if (prefs.getBoolean("block_on", true)) "on" else "off"}, exit guard") { goSettings("privacy") }
@@ -290,7 +290,7 @@ internal fun MainActivity.pageProfiles(list: LinearLayout) {
         rowBase(list, "Not available", "Profiles need a newer Android System WebView. Update it in the Play Store, then restart the app", null, null)
         return
     }
-    rowBase(list, "Main", "Default. Holds the logins you already have", accentDot(0xFF607D8B.toInt()), null)
+    rowBase(list, profiles.mainName, "Default. Holds the logins you already have", accentDot(profiles.mainColor)) { mainOptions() }
     profiles.items.forEach { p ->
         val n = tabs.count { it.profile == p.id }
         rowBase(list, p.name, if (n == 0) "No tabs open" else "$n tab(s) open", accentDot(p.color)) { profileOptions(p) }

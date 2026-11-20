@@ -81,9 +81,18 @@ class Tab(val web: WebView) {
     var isHome = false
     var desktop = false
     var profile = ""                   // "" = Main; otherwise the id of the profile this tab lives in
+    var group = ""                     // id of the TabGroup this tab sits in; "" = not grouped
     var thumb: Bitmap? = null
+    var thumbTime = 0L                 // uptime of the last live (PixelCopy) preview, so a worse one doesn't replace it right away
     var favicon: Bitmap? = null
     val canGoBack: Boolean get() = web.canGoBack()
+}
+
+object ProfileColors {
+    val names = BrowserProfileStore.NAMES
+    val colors = BrowserProfileStore.PALETTE
+    val mainNames = arrayOf("Grey") + BrowserProfileStore.NAMES
+    val mainColors = intArrayOf(0xFF607D8B.toInt()) + BrowserProfileStore.PALETTE
 }
 
 /** State of one full-page capture (scroll + draw + stitch). */
@@ -175,6 +184,7 @@ class MainActivity : Activity() {
     var settingsDialog: Dialog? = null
     var settingsPage = ""
     lateinit var profiles: BrowserProfileStore
+    lateinit var tabGroups: TabGroupStore
     private var gestActive = false
     private var lastFind = ""
     private var findTab: Tab? = null
@@ -200,6 +210,7 @@ class MainActivity : Activity() {
         drops = DropStore(prefs)
         downloads = DownloadStore(prefs)
         profiles = BrowserProfileStore(prefs)
+        tabGroups = TabGroupStore(prefs)
         applyTheme()
 
         wipePendingProfiles()
@@ -326,7 +337,7 @@ class MainActivity : Activity() {
         val isHomeTab = url == HOME_PAGE
         var prof = profile
         val web: WebView = newWebView(prof) ?: run {
-            toast("Profile \"${profiles.nameOf(prof)}\" isn't available, opened in Main")
+            toast("Profile \"${profiles.nameOf(prof)}\" isn't available, opened in ${profiles.mainName}")
             prof = ""
             newWebView("")!!
         }
@@ -1354,22 +1365,101 @@ class MainActivity : Activity() {
 
     // ---------- Tabs ----------
 
-    /** Small preview of a tab for the tab grid (top part of the page). */
+    /** Where a dragged tab or group would land. kind 1 = next to a tab, 2 = in / next to a group, 3 = out of all groups. */
+    private class DropTarget(val kind: Int, val tab: Tab?, val gid: String, val after: Boolean)
+
+    private fun setThumb(t: Tab, bmp: Bitmap, live: Boolean) {
+        val w = 360
+        val h = (bmp.height * w / bmp.width.toFloat()).toInt().coerceAtLeast(1)
+        val small = Bitmap.createScaledBitmap(bmp, w, h, true)
+        t.thumb = if (h > 420) Bitmap.createBitmap(small, 0, 0, w, 420) else small
+        if (live) t.thumbTime = SystemClock.uptimeMillis()
+    }
+
+    /** True when most of the picture is near-black: what WebView.draw gives for GPU-drawn game content. */
+    private fun mostlyBlack(b: Bitmap): Boolean {
+        val n = 16
+        val s = Bitmap.createScaledBitmap(b, n, n, true)
+        var dark = 0
+        for (x in 0 until n) for (y in 0 until n) {
+            val p = s.getPixel(x, y)
+            if (Color.red(p) < 14 && Color.green(p) < 14 && Color.blue(p) < 14) dark++
+        }
+        if (s !== b) s.recycle()
+        return dark > n * n * 0.6
+    }
+
+    /** Quick preview of a tab (WebView.draw). It can come out black, so it never replaces a good preview with a black one. */
     private fun captureTabThumb(t: Tab?) {
         if (t == null) return
         if (t.isHome) { t.thumb = null; return }
+        if (SystemClock.uptimeMillis() - t.thumbTime < 5000) return   // a live preview was just taken
         try {
             val bmp = captureWeb(t.web) ?: return
-            val w = 360
-            val h = (bmp.height * w / bmp.width.toFloat()).toInt().coerceAtLeast(1)
-            val small = Bitmap.createScaledBitmap(bmp, w, h, true)
-            t.thumb = if (h > 420) Bitmap.createBitmap(small, 0, 0, w, 420) else small
+            if (t.thumb != null && mostlyBlack(bmp)) return
+            setThumb(t, bmp, false)
         } catch (e: Throwable) { }
     }
 
-    /** Firefox-style tab grid: two columns of cards (icon, title, close + preview), + button bottom right. */
+    /**
+     * Preview of what is really on screen, copied from the window with PixelCopy (like the full-page screenshot).
+     * WebView.draw shows black for scrolled or GPU-drawn game pages. Floating buttons are hidden for a moment.
+     */
+    private fun captureLiveThumb(t: Tab?, done: () -> Unit) {
+        val web = t?.web
+        if (t == null || t.isHome || web == null || web.parent == null || web.width <= 0 || web.height <= 0 || capturing) {
+            captureTabThumb(t); done(); return
+        }
+        val floatVis = floatLayer.visibility
+        val fsVis = fsButton.visibility
+        floatLayer.visibility = View.INVISIBLE
+        fsButton.visibility = View.INVISIBLE
+        var finished = false
+        fun finish() {
+            if (finished) return
+            finished = true
+            floatLayer.visibility = floatVis
+            fsButton.visibility = fsVis
+            done()
+        }
+        handler.postDelayed({
+            try {
+                val frame = Bitmap.createBitmap(web.width, web.height, Bitmap.Config.ARGB_8888)
+                val loc = IntArray(2)
+                web.getLocationInWindow(loc)
+                val src = Rect(loc[0], loc[1], loc[0] + web.width, loc[1] + web.height)
+                PixelCopy.request(window, src, frame, PixelCopy.OnPixelCopyFinishedListener { res ->
+                    try {
+                        if (res == PixelCopy.SUCCESS && !(t.thumb != null && mostlyBlack(frame))) setThumb(t, frame, true)
+                        else captureTabThumb(t)
+                    } catch (e: Throwable) { }
+                    finish()
+                }, handler)
+            } catch (e: Throwable) {
+                captureTabThumb(t)
+                finish()
+            }
+        }, 90)
+        handler.postDelayed({ finish() }, 1500)   // never leave the buttons hidden if the copy never answers
+    }
+
+    private var tabsBusy = false
+
     fun showTabs() {
-        captureTabThumb(current)
+        if (tabsBusy) return
+        tabsBusy = true
+        captureLiveThumb(current) {
+            tabsBusy = false
+            showTabsDialog()
+        }
+    }
+
+    /**
+     * Firefox-style tab grid with your own tab groups.
+     * Long-press a tab or a group header and drag to move it (onto a tab = next to it, onto a group header = into
+     * that group, onto "Ungrouped" = out of its group). Long-press and release without moving opens its menu.
+     */
+    private fun showTabsDialog() {
         val d = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val cBg = C_BG
         val cCard = C_SURFACE
@@ -1377,7 +1467,7 @@ class MainActivity : Activity() {
         val rootView = FrameLayout(this).apply { setBackgroundColor(cBg) }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        // top row: tab count (selected), history, menu
+        // top row: tab count (selected), history, downloads, new group
         val countBox = TextView(this).apply {
             textSize = 13f; setTextColor(C_TEXT); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
             background = GradientDrawable().apply { cornerRadius = dp(6).toFloat(); setStroke(dp(2), C_ICE) }
@@ -1393,6 +1483,7 @@ class MainActivity : Activity() {
             text = txt; textSize = 20f; setTextColor(C_TEXT); gravity = Gravity.CENTER
             setPadding(0, dp(4), 0, dp(13)); setOnClickListener { onTap() }
         }
+        var onNewGroup: () -> Unit = { }
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM
             setPadding(dp(8), dp(30), dp(8), 0)
@@ -1400,70 +1491,424 @@ class MainActivity : Activity() {
             addView(tabsCell, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(topIcon("🕘") { d.dismiss(); showHistory() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(topIcon("⬇") { d.dismiss(); showDownloads() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(topIcon("📁") { onNewGroup() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         col.addView(top, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        val grid = GridLayout(this).apply { columnCount = 2; setPadding(dp(6), dp(6), dp(6), dp(96)) }
-        val scroll = ScrollView(this).apply { addView(grid); clipToPadding = false }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(96)) }
+        val scroll = ScrollView(this).apply { addView(content); clipToPadding = false }
         col.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         rootView.addView(col, FrameLayout.LayoutParams(-1, -1))
 
         val cw = (resources.displayMetrics.widthPixels - dp(6) * 2 - dp(6) * 4) / 2
 
-        fun refresh() {
-            countBox.text = tabs.size.toString()
-            grid.removeAllViews()
-            tabs.toList().forEach { t ->
-                val sel = t === current
-                val card = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(dp(4), dp(4), dp(4), dp(4))
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(12).toFloat(); setColor(cCard)
-                        setStroke(if (sel) dp(3) else dp(1), if (sel) cAccent else C_BORDER)
+        // ---- state shared by the drag code ----
+        var doRefresh: () -> Unit = { }
+        val cardViews = ArrayList<Pair<View, Tab>>()
+        val headerViews = ArrayList<Pair<View, String>>()   // "" = the Ungrouped header
+        val rootLoc = IntArray(2)
+        var dragSrc: View? = null
+        var dragTab: Tab? = null
+        var dragGroup: TabGroup? = null
+        var ghost: ImageView? = null
+        var grabX = 0f
+        var grabY = 0f
+        var lastX = 0f
+        var lastY = 0f
+        var startX = 0f
+        var startY = 0f
+        var moved = false
+        var drop: DropTarget? = null
+        val barBg = GradientDrawable().apply { cornerRadius = dp(2).toFloat(); setColor(cAccent) }
+        val boxBg = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(Color.TRANSPARENT); setStroke(dp(3), cAccent) }
+        val indicator = View(this).apply { visibility = View.GONE; elevation = dp(6).toFloat() }
+
+        fun rectOf(v: View): Rect {
+            val l = IntArray(2)
+            v.getLocationOnScreen(l)
+            return Rect(l[0], l[1], l[0] + v.width, l[1] + v.height)
+        }
+
+        fun showIndicator(dt: DropTarget?) {
+            var r: Rect? = null
+            var bar = false
+            if (dt != null) {
+                if (dt.kind == 1) {
+                    val p = cardViews.firstOrNull { it.second === dt.tab }
+                    if (p != null) { r = rectOf(p.first); bar = true }
+                } else {
+                    val p = headerViews.firstOrNull { it.second == dt.gid }
+                    if (p != null) r = rectOf(p.first)
+                }
+            }
+            val rc = r
+            if (rc == null) { indicator.visibility = View.GONE; return }
+            val after = dt?.after == true
+            rootView.getLocationOnScreen(rootLoc)
+            val w = if (bar) dp(4) else rc.width()
+            val x = if (bar) (if (after) rc.right + dp(3) else rc.left - dp(7)) else rc.left
+            indicator.background = if (bar) barBg else boxBg
+            indicator.layoutParams = FrameLayout.LayoutParams(w, rc.height())
+            indicator.translationX = (x - rootLoc[0]).toFloat()
+            indicator.translationY = (rc.top - rootLoc[1]).toFloat()
+            indicator.visibility = View.VISIBLE
+        }
+
+        fun findTarget(rx: Float, ry: Float): DropTarget? {
+            val x = rx.toInt()
+            val y = ry.toInt()
+            if (!rectOf(scroll).contains(x, y)) return null
+            val pad = dp(6)
+            val dt = dragTab
+            val dg = dragGroup
+            for ((v, t2) in cardViews) {
+                if (t2 === dt) continue
+                val r = rectOf(v)
+                r.inset(-pad, -pad)
+                if (!r.contains(x, y)) continue
+                if (dt != null) return DropTarget(1, t2, t2.group, x > r.centerX())
+                if (dg != null && t2.group.isNotEmpty() && t2.group != dg.id) return DropTarget(2, null, t2.group, false)
+            }
+            for ((v, gid) in headerViews) {
+                if (dg != null && (gid.isEmpty() || gid == dg.id)) continue
+                if (rectOf(v).contains(x, y)) return if (gid.isEmpty()) DropTarget(3, null, "", false) else DropTarget(2, null, gid, false)
+            }
+            // blank space: the section whose header is the closest one above the finger
+            var best: Pair<View, String>? = null
+            var bestTop = Int.MIN_VALUE
+            for (p in headerViews) {
+                val tp = rectOf(p.first).top
+                if (tp <= y && tp > bestTop) { best = p; bestTop = tp }
+            }
+            val gid = best?.second ?: return null
+            if (dg != null && (gid.isEmpty() || gid == dg.id)) return null
+            return if (gid.isEmpty()) DropTarget(3, null, "", false) else DropTarget(2, null, gid, false)
+        }
+
+        fun applyDrop(t: Tab?, g: TabGroup?, dt: DropTarget?) {
+            if (dt == null) return
+            if (t != null) {
+                when (dt.kind) {
+                    1 -> {
+                        val t2 = dt.tab ?: return
+                        tabs.remove(t)
+                        var i = tabs.indexOf(t2)
+                        if (i < 0) i = tabs.size else if (dt.after) i++
+                        tabs.add(i, t)
+                        t.group = t2.group
                     }
-                    setOnClickListener { switchTo(t); d.dismiss() }
-                }
-                val title = t.title.ifEmpty { if (t.isHome) "Home" else hostOf(t.url).ifEmpty { "New tab" } }
-                val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                val fav: View = if (t.favicon != null) ImageView(this).apply {
-                    setImageBitmap(t.favicon); scaleType = ImageView.ScaleType.FIT_CENTER
-                } else TextView(this).apply {
-                    text = (hostOf(t.url).ifEmpty { title }).take(1).uppercase()
-                    textSize = 11f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
-                    background = GradientDrawable().apply { cornerRadius = dp(4).toFloat(); setColor(C_BORDER) }
-                }
-                head.addView(fav, LinearLayout.LayoutParams(dp(18), dp(18)).apply { setMargins(dp(6), 0, dp(6), 0) })
-                head.addView(TextView(this).apply {
-                    text = title; setTextColor(C_TEXT); textSize = 13f
-                    setSingleLine(); ellipsize = TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                if (t.profile.isNotEmpty()) head.addView(TextView(this).apply {
-                    text = profiles.nameOf(t.profile).take(8); textSize = 10f; setTextColor(Color.WHITE)
-                    setPadding(dp(6), dp(1), dp(6), dp(1))
-                    background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(profiles.colorOf(t.profile)) }
-                })
-                head.addView(TextView(this).apply {
-                    text = "✕"; textSize = 15f; setTextColor(C_TEXT)
-                    setPadding(dp(10), dp(8), dp(8), dp(8))
-                    setOnClickListener { closeTab(t); refresh() }
-                })
-                card.addView(head)
-                val pic = ImageView(this).apply {
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    setBackgroundColor(C_BG)
-                    if (t.thumb != null) setImageBitmap(t.thumb)
-                    outlineProvider = object : android.view.ViewOutlineProvider() {
-                        override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(8).toFloat()) }
+                    2 -> {
+                        tabs.remove(t)
+                        t.group = dt.gid
+                        val last = tabs.indexOfLast { it.group == dt.gid }
+                        tabs.add(if (last >= 0) last + 1 else tabs.size, t)
                     }
-                    clipToOutline = true
+                    3 -> {
+                        tabs.remove(t)
+                        t.group = ""
+                        val last = tabs.indexOfLast { it.group.isEmpty() }
+                        tabs.add(if (last >= 0) last + 1 else tabs.size, t)
+                    }
                 }
-                card.addView(pic, LinearLayout.LayoutParams(-1, (cw * 1.1f).toInt()).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) })
-                grid.addView(card, GridLayout.LayoutParams().apply {
+            } else if (g != null && dt.kind == 2) {
+                val target = tabGroups.get(dt.gid) ?: return
+                tabGroups.move(g, tabGroups.items.indexOf(target))
+            }
+            tabGroups.save()
+            scheduleSession()
+        }
+
+        fun changed() { tabGroups.save(); scheduleSession(); doRefresh() }
+
+        // ---- group dialogs and menus ----
+        fun nameDialog(title: String, initial: String, onName: (String) -> Unit) {
+            val input = EditText(this).apply {
+                setSingleLine(); hint = "Group name"; setText(initial); setSelection(initial.length)
+                setPadding(dp(24), dp(14), dp(24), dp(10))
+            }
+            AlertDialog.Builder(this).setTitle(title).setView(input)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save") { _, _ ->
+                    val n = input.text.toString().trim().take(20)
+                    if (n.isNotEmpty()) onName(n)
+                }.showT()
+        }
+
+        fun newGroup(onCreated: (TabGroup) -> Unit) {
+            nameDialog("New group", "") { n ->
+                if (tabGroups.nameTaken(n)) toast("That name is taken")
+                else { val g = tabGroups.add(n); onCreated(g) }
+            }
+        }
+        onNewGroup = { newGroup { _ -> changed() } }
+
+        fun groupMenu(g: TabGroup) {
+            val n = tabs.count { it.group == g.id }
+            AlertDialog.Builder(this).setTitle(g.name)
+                .setItems(arrayOf("Rename", "Change color", "Close all tabs in group", "Delete group (keep tabs)")) { _, i ->
+                    when (i) {
+                        0 -> nameDialog("Rename group", g.name) { nn ->
+                            if (tabGroups.nameTaken(nn, g)) toast("That name is taken") else { g.name = nn; changed() }
+                        }
+                        1 -> AlertDialog.Builder(this).setTitle("Color").setItems(TabGroupStore.NAMES) { _, c ->
+                            g.color = TabGroupStore.PALETTE[c]; changed()
+                        }.showT()
+                        2 -> if (n == 0) toast("No tabs in this group")
+                            else confirm("Close $n tab(s) in \"${g.name}\"?", "Close") {
+                                tabs.filter { it.group == g.id }.forEach { closeTab(it) }
+                                changed()
+                            }
+                        else -> {
+                            tabs.filter { it.group == g.id }.forEach { it.group = "" }
+                            tabGroups.remove(g)
+                            changed()
+                        }
+                    }
+                }.showT()
+        }
+
+        fun pickGroup(t: Tab) {
+            val gs = tabGroups.items.filter { it.id != t.group }
+            if (gs.isEmpty()) return
+            AlertDialog.Builder(this).setTitle("Move to group")
+                .setItems(gs.map { it.name }.toTypedArray()) { _, i ->
+                    applyDrop(t, null, DropTarget(2, null, gs[i].id, false))
+                    doRefresh()
+                }.showT()
+        }
+
+        fun tabMenu(t: Tab) {
+            val labels = ArrayList<String>()
+            val acts = ArrayList<() -> Unit>()
+            if (tabGroups.items.any { it.id != t.group }) { labels += "Move to group…"; acts += { pickGroup(t) } }
+            labels += "New group with this tab…"
+            acts += { newGroup { g -> applyDrop(t, null, DropTarget(2, null, g.id, false)); doRefresh() } }
+            if (t.group.isNotEmpty()) { labels += "Remove from group"; acts += { applyDrop(t, null, DropTarget(3, null, "", false)); doRefresh() } }
+            labels += "Close tab"
+            acts += { closeTab(t); doRefresh() }
+            val title = t.title.ifEmpty { if (t.isHome) "Home" else hostOf(t.url).ifEmpty { "New tab" } }
+            AlertDialog.Builder(this).setTitle(title.take(40))
+                .setItems(labels.toTypedArray()) { _, i -> acts[i]() }.showT()
+        }
+
+        // ---- drag and drop ----
+        fun placeGhost() {
+            val g = ghost ?: return
+            rootView.getLocationOnScreen(rootLoc)
+            g.translationX = lastX - grabX - rootLoc[0]
+            g.translationY = lastY - grabY - rootLoc[1]
+        }
+
+        fun updateTarget() {
+            if (!moved) { drop = null; showIndicator(null); return }
+            drop = findTarget(lastX, lastY)
+            showIndicator(drop)
+        }
+
+        val autoScroll = object : Runnable {
+            override fun run() {
+                if (dragSrc == null) return
+                val sr = rectOf(scroll)
+                val edge = dp(90)
+                val step = dp(14)
+                val dy = when {
+                    lastY < sr.top + edge -> -step
+                    lastY > sr.bottom - edge -> step
+                    else -> 0
+                }
+                if (dy != 0) { scroll.scrollBy(0, dy); updateTarget() }
+                handler.postDelayed(this, 16)
+            }
+        }
+
+        fun startDrag(v: View, t: Tab?, g: TabGroup?) {
+            if (dragSrc != null) return
+            dragSrc = v; dragTab = t; dragGroup = g
+            moved = false; drop = null
+            startX = lastX; startY = lastY
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
+            grabX = lastX - loc[0]
+            grabY = lastY - loc[1]
+            try {
+                val bmp = Bitmap.createBitmap(v.width.coerceAtLeast(1), v.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                v.draw(Canvas(bmp))
+                val iv = ImageView(this)
+                iv.setImageBitmap(bmp)
+                iv.alpha = 0.88f
+                iv.elevation = dp(10).toFloat()
+                rootView.addView(iv, FrameLayout.LayoutParams(v.width, v.height))
+                ghost = iv
+            } catch (e: Throwable) { }
+            v.alpha = 0.3f
+            v.parent?.requestDisallowInterceptTouchEvent(true)
+            placeGhost()
+            handler.post(autoScroll)
+        }
+
+        fun moveDrag() {
+            if (!moved && Math.hypot((lastX - startX).toDouble(), (lastY - startY).toDouble()) > dp(10)) moved = true
+            placeGhost()
+            updateTarget()
+        }
+
+        fun endDrag(commit: Boolean) {
+            val src = dragSrc ?: return
+            val t = dragTab
+            val g = dragGroup
+            val dt = drop
+            val wasMoved = moved
+            dragSrc = null; dragTab = null; dragGroup = null; drop = null; moved = false
+            handler.removeCallbacks(autoScroll)
+            ghost?.let { rootView.removeView(it) }
+            ghost = null
+            indicator.visibility = View.GONE
+            src.alpha = 1f
+            src.isPressed = false
+            if (!commit) return
+            if (!wasMoved) {
+                if (t != null) tabMenu(t) else if (g != null) groupMenu(g)
+                return
+            }
+            applyDrop(t, g, dt)
+            doRefresh()
+        }
+
+        fun attachDrag(v: View, t: Tab?, g: TabGroup?) {
+            v.setOnLongClickListener { startDrag(v, t, g); true }
+            v.setOnTouchListener { vv, e ->
+                lastX = e.rawX
+                lastY = e.rawY
+                if (dragSrc !== vv) false
+                else {
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_MOVE -> moveDrag()
+                        MotionEvent.ACTION_UP -> endDrag(true)
+                        MotionEvent.ACTION_CANCEL -> endDrag(false)
+                    }
+                    true
+                }
+            }
+        }
+
+        // ---- building the views ----
+        fun makeCard(t: Tab): View {
+            val sel = t === current
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(12).toFloat(); setColor(cCard)
+                    setStroke(if (sel) dp(3) else dp(1), if (sel) cAccent else C_BORDER)
+                }
+                setOnClickListener { switchTo(t); d.dismiss() }
+            }
+            val title = t.title.ifEmpty { if (t.isHome) "Home" else hostOf(t.url).ifEmpty { "New tab" } }
+            val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val fav: View = if (t.favicon != null) ImageView(this).apply {
+                setImageBitmap(t.favicon); scaleType = ImageView.ScaleType.FIT_CENTER
+            } else TextView(this).apply {
+                text = (hostOf(t.url).ifEmpty { title }).take(1).uppercase()
+                textSize = 11f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+                background = GradientDrawable().apply { cornerRadius = dp(4).toFloat(); setColor(C_BORDER) }
+            }
+            head.addView(fav, LinearLayout.LayoutParams(dp(18), dp(18)).apply { setMargins(dp(6), 0, dp(6), 0) })
+            head.addView(TextView(this).apply {
+                text = title; setTextColor(C_TEXT); textSize = 13f
+                setSingleLine(); ellipsize = TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            // profile badge, Main included once there is more than one profile
+            if (profiles.items.isNotEmpty()) head.addView(TextView(this).apply {
+                text = profiles.nameOf(t.profile).take(8); textSize = 10f; setTextColor(Color.WHITE)
+                setPadding(dp(6), dp(1), dp(6), dp(1))
+                background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(profiles.colorOf(t.profile)) }
+            })
+            head.addView(TextView(this).apply {
+                text = "✕"; textSize = 15f; setTextColor(C_TEXT)
+                setPadding(dp(10), dp(8), dp(8), dp(8))
+                setOnClickListener { closeTab(t); doRefresh() }
+            })
+            card.addView(head)
+            val pic = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setBackgroundColor(C_BG)
+                if (t.thumb != null) setImageBitmap(t.thumb)
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(8).toFloat()) }
+                }
+                clipToOutline = true
+            }
+            card.addView(pic, LinearLayout.LayoutParams(-1, (cw * 1.1f).toInt()).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) })
+            attachDrag(card, t, null)
+            cardViews.add(card to t)
+            return card
+        }
+
+        fun makeHeader(g: TabGroup?): View {
+            val color = g?.color ?: C_BORDER
+            val n = if (g == null) tabs.count { it.group.isEmpty() } else tabs.count { it.group == g.id }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(6), dp(4), dp(6))
+                background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(cCard); setStroke(dp(1), color) }
+            }
+            row.addView(View(this).apply {
+                background = GradientDrawable().apply { cornerRadius = dp(3).toFloat(); setColor(color) }
+            }, LinearLayout.LayoutParams(dp(10), dp(10)).apply { rightMargin = dp(10) })
+            row.addView(TextView(this).apply {
+                text = g?.name ?: "Ungrouped"; textSize = 14f; typeface = Typeface.DEFAULT_BOLD
+                setTextColor(if (g == null) C_MUTED else C_TEXT)
+                setSingleLine(); ellipsize = TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(TextView(this).apply {
+                text = n.toString(); textSize = 12f; setTextColor(C_MUTED); setPadding(dp(8), 0, dp(8), 0)
+            })
+            if (g != null) {
+                row.addView(TextView(this).apply {
+                    text = if (g.collapsed) "▸" else "▾"; textSize = 16f; setTextColor(C_TEXT); setPadding(dp(4), 0, dp(4), 0)
+                })
+                row.addView(TextView(this).apply {
+                    text = "⋮"; textSize = 20f; setTextColor(C_TEXT); setPadding(dp(12), dp(4), dp(12), dp(4))
+                    setOnClickListener { groupMenu(g) }
+                })
+                row.setOnClickListener { g.collapsed = !g.collapsed; tabGroups.save(); doRefresh() }
+                attachDrag(row, null, g)
+            }
+            headerViews.add(row to (g?.id ?: ""))
+            return row
+        }
+
+        fun headerLp() = LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(6), dp(10), dp(6), dp(4)) }
+
+        fun addSection(list: List<Tab>, emptyHint: String?) {
+            if (list.isEmpty()) {
+                if (emptyHint != null) content.addView(TextView(this).apply {
+                    text = emptyHint; textSize = 12f; setTextColor(C_MUTED); setPadding(dp(16), dp(8), dp(16), dp(8))
+                }, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
+                return
+            }
+            val grid = GridLayout(this).apply { columnCount = 2 }
+            list.forEach { t ->
+                grid.addView(makeCard(t), GridLayout.LayoutParams().apply {
                     width = cw; height = ViewGroup.LayoutParams.WRAP_CONTENT; setMargins(dp(6), dp(6), dp(6), dp(6))
                 })
             }
+            content.addView(grid, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
+
+        fun refresh() {
+            tabs.forEach { if (it.group.isNotEmpty() && tabGroups.get(it.group) == null) it.group = "" }
+            countBox.text = tabs.size.toString()
+            content.removeAllViews(); cardViews.clear(); headerViews.clear()
+            val hasGroups = tabGroups.items.isNotEmpty()
+            if (hasGroups) content.addView(makeHeader(null), headerLp())
+            addSection(tabs.filter { it.group.isEmpty() }, if (hasGroups) "No ungrouped tabs" else null)
+            tabGroups.items.toList().forEach { g ->
+                content.addView(makeHeader(g), headerLp())
+                if (!g.collapsed) addSection(tabs.filter { it.group == g.id }, "Drag tabs here")
+            }
+        }
+        doRefresh = { refresh() }
         refresh()
 
         val fab = TextView(this).apply {
@@ -1474,15 +1919,17 @@ class MainActivity : Activity() {
             setOnLongClickListener { newTabInProfile { d.dismiss() }; true }
         }
         rootView.addView(fab, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(20), dp(28)) })
+        rootView.addView(indicator, FrameLayout.LayoutParams(1, 1))
 
         // long-press the count: close all tabs
         tabsCell.setOnLongClickListener {
             AlertDialog.Builder(this).setItems(arrayOf("Close all tabs")) { _, _ ->
                 tabs.toList().forEach { closeTab(it) }
-                refresh()
+                doRefresh()
             }.showT()
             true
         }
+        d.setOnDismissListener { endDrag(false) }
         d.setContentView(rootView)
         d.show()
     }
@@ -1998,7 +2445,7 @@ class MainActivity : Activity() {
 
     private fun profileSpinner(selected: String): Spinner {
         val ids = listOf("", "main") + profiles.items.map { it.id }
-        val names = listOf("Profile: current tab", "Profile: Main") + profiles.items.map { "Profile: ${it.name}" }
+        val names = listOf("Profile: current tab", "Profile: ${profiles.mainName}") + profiles.items.map { "Profile: ${it.name}" }
         return Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, names)
             setSelection(ids.indexOf(selected).coerceAtLeast(0))
@@ -2010,7 +2457,7 @@ class MainActivity : Activity() {
     /** Long-press on + in the tab list. */
     private fun newTabInProfile(afterPick: () -> Unit) {
         val ids = listOf("") + profiles.items.map { it.id }
-        val names = listOf("Main") + profiles.items.map { it.name } + "+ New profile…"
+        val names = listOf(profiles.mainName) + profiles.items.map { it.name } + "+ New profile…"
         AlertDialog.Builder(this).setTitle("New tab in…")
             .setItems(names.toTypedArray()) { _, i ->
                 if (i == names.size - 1) { addProfile(); return@setItems }
@@ -2026,7 +2473,7 @@ class MainActivity : Activity() {
         val cur = current?.profile.orEmpty()
         val ids = ArrayList<String>()
         val names = ArrayList<String>()
-        if (cur.isNotEmpty()) { ids += ""; names += "Reopen this page in Main" }
+        if (cur.isNotEmpty()) { ids += ""; names += "Reopen this page in ${profiles.mainName}" }
         profiles.items.filter { it.id != cur }.forEach { ids += it.id; names += "Reopen this page in ${it.name}" }
         names += "Manage profiles…"
         AlertDialog.Builder(this).setTitle("Profile: ${profiles.nameOf(cur)}")
@@ -2058,7 +2505,7 @@ class MainActivity : Activity() {
             .setPositiveButton("Create") { _, _ ->
                 val n = input.text.toString().trim().take(16)
                 if (n.isEmpty()) return@setPositiveButton
-                if (n.equals("main", true) || profiles.items.any { it.name.equals(n, true) }) { toast("That name is taken"); return@setPositiveButton }
+                if (profiles.nameTaken(n)) { toast("That name is taken"); return@setPositiveButton }
                 profiles.add(n)
                 toast("Profile \"$n\" created. Long-press + in the tab list to open a tab in it")
                 refreshSettings()
@@ -2067,8 +2514,9 @@ class MainActivity : Activity() {
 
     fun profileOptions(p: BrowserProfile) {
         AlertDialog.Builder(this).setTitle(p.name)
-            .setItems(arrayOf("Rename", "Delete and wipe its logins")) { _, w ->
-                if (w == 0) {
+            .setItems(arrayOf("Rename", "Change color", "Delete and wipe its logins")) { _, w ->
+                if (w == 1) pickColor(ProfileColors.names, ProfileColors.colors) { p.color = it; profiles.save(); refreshSettings() }
+                else if (w == 0) {
                     val input = EditText(this).apply {
                         setSingleLine(); setText(p.name)
                         setPadding(dp(24), dp(14), dp(24), dp(10))
@@ -2077,7 +2525,9 @@ class MainActivity : Activity() {
                         .setNegativeButton("Cancel", null)
                         .setPositiveButton("Save") { _, _ ->
                             val n = input.text.toString().trim().take(16)
-                            if (n.isNotEmpty()) { p.name = n; profiles.save(); refreshSettings() }
+                            if (n.isEmpty()) return@setPositiveButton
+                            if (profiles.nameTaken(n, p.id)) { toast("That name is taken"); return@setPositiveButton }
+                            p.name = n; profiles.save(); refreshSettings()
                         }.showT()
                 } else confirm("Delete profile \"${p.name}\"? Its tabs are closed and every login in it is wiped.", "Delete") {
                     tabs.filter { it.profile == p.id }.forEach { closeTab(it) }
@@ -2092,6 +2542,33 @@ class MainActivity : Activity() {
                     refreshSettings()
                 }
             }.showT()
+    }
+
+    /** Main is renamable and recolorable like any other profile. */
+    fun mainOptions() {
+        AlertDialog.Builder(this).setTitle(profiles.mainName)
+            .setItems(arrayOf("Rename", "Change color")) { _, w ->
+                if (w == 1) pickColor(ProfileColors.mainNames, ProfileColors.mainColors) { profiles.recolorMain(it); refreshSettings() }
+                else {
+                    val input = EditText(this).apply {
+                        setSingleLine(); setText(profiles.mainName)
+                        setPadding(dp(24), dp(14), dp(24), dp(10))
+                    }
+                    AlertDialog.Builder(this).setTitle("Rename Main").setView(input)
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Save") { _, _ ->
+                            val n = input.text.toString().trim().take(16)
+                            if (n.isEmpty()) return@setPositiveButton
+                            if (profiles.nameTaken(n, "")) { toast("That name is taken"); return@setPositiveButton }
+                            profiles.renameMain(n); refreshSettings()
+                        }.showT()
+                }
+            }.showT()
+    }
+
+    private fun pickColor(names: Array<String>, colors: IntArray, onPick: (Int) -> Unit) {
+        AlertDialog.Builder(this).setTitle("Color")
+            .setItems(names) { _, i -> onPick(colors[i]) }.showT()
     }
 
     // ---------- Gestures ----------
@@ -2462,7 +2939,7 @@ class MainActivity : Activity() {
         if (!::prefs.isInitialized || tabs.isEmpty()) return
         val arr = JSONArray()
         tabs.forEach { t ->
-            arr.put(JSONObject().put("id", t.id).put("u", t.url).put("t", t.title).put("h", t.isHome).put("p", t.profile))
+            arr.put(JSONObject().put("id", t.id).put("u", t.url).put("t", t.title).put("h", t.isHome).put("p", t.profile).put("g", t.group))
         }
         val o = JSONObject().put("cur", tabs.indexOf(current).coerceAtLeast(0)).put("tabs", arr)
         prefs.edit().putString("session", o.toString()).apply()
@@ -2499,6 +2976,7 @@ class MainActivity : Activity() {
                 val t = if (u.isEmpty()) openTab(HOME_PAGE, show = false, profile = pf) else openTab(u, show = false, lazy = true, profile = pf)
                 if (u.isNotEmpty() && e.optBoolean("h")) t.isHome = true   // home screen shown over a loaded page
                 t.id = e.optLong("id", t.id)
+                t.group = e.optString("g").let { if (it.isNotEmpty() && tabGroups.get(it) == null) "" else it }
                 t.title = e.optString("t")
                 val f = File(dir, "${t.id}.jpg")
                 if (f.exists()) t.thumb = BitmapFactory.decodeFile(f.path)

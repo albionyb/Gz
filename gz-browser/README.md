@@ -6,11 +6,13 @@ A lightweight Android browser made for playing Granblue Fantasy. It is built on 
 
 **Browsing**
 - Tabs with a Firefox-style tab grid, tab restore after restart, and a home screen with shortcuts
+- **Tab groups:** make your own named, colored groups from the tab grid (📁 button, or long-press a tab). Long-press a tab and drag it to reorder it, onto a group header to move it in, or onto "Ungrouped" to take it out. Group headers can be dragged to reorder, tapped to collapse, and have a ⋮ menu (rename, color, close tabs, delete). Long-press and release without moving opens the tab's menu
+- Tab previews are copied from the real screen, so scrolled pages and game screens no longer show black
 - Built-in ad and tracker blocker (can be switched off per site, and never active on the game's own sites)
 - Desktop-site mode per site, page width slider, text mode and optional pinch zoom
 - History, file upload support, and a download list (progress, cancel, retry, open, share, delete)
 - Clear cache, clear one site's data, or clear everything
-- **Profiles:** separate logins and site data (for example a second game account). Long-press + in the tab list to open a tab in a profile, tie a bookmark or shortcut to one, or reopen a page in another profile. Needs a recent Android System WebView
+- **Profiles:** (Main can be renamed and recolored too, and every tab card shows its profile badge) separate logins and site data (for example a second game account). Long-press + in the tab list to open a tab in a profile, tie a bookmark or shortcut to one, or reopen a page in another profile. Needs a recent Android System WebView
 - **Gestures** (off by default): edge swipes, address bar and bottom bar swipes, two and three finger swipes. Every gesture can be mapped to an action, and gestures can be switched off per site
 - Find in page
 - Settings grouped into pages (Browsing, Profiles, Privacy & safety, Appearance, Screen & bars, Bubbles & floating buttons, Gestures, Bookmarks & backup, Downloads & storage)

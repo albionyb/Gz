@@ -13,11 +13,26 @@ class BrowserProfile(val id: String, var name: String, var color: Int)
 class BrowserProfileStore(private val prefs: SharedPreferences) {
     val items = mutableListOf<BrowserProfile>()
 
+    /** "Main" can be renamed and recolored like the others; it keeps id "" so existing logins stay put. */
+    var mainName: String = prefs.getString("main_name", null)?.takeIf { it.isNotBlank() } ?: "Main"
+        private set
+    var mainColor: Int = prefs.getInt("main_color", 0xFF607D8B.toInt())
+        private set
+
+    fun renameMain(n: String) { mainName = n; prefs.edit().putString("main_name", n).apply() }
+    fun recolorMain(c: Int) { mainColor = c; prefs.edit().putInt("main_color", c).apply() }
+
+    /** True when [name] is already used by Main or by another profile ([exceptId] is skipped, "" = Main). */
+    fun nameTaken(name: String, exceptId: String? = null): Boolean =
+        (exceptId != "" && mainName.equals(name, true)) ||
+            items.any { it.id != exceptId && it.name.equals(name, true) }
+
     companion object {
         val PALETTE = intArrayOf(
             0xFFE57373.toInt(), 0xFF81C784.toInt(), 0xFFFFB74D.toInt(),
             0xFFBA68C8.toInt(), 0xFF4DB6AC.toInt(), 0xFFF06292.toInt()
         )
+        val NAMES = arrayOf("Red", "Green", "Orange", "Purple", "Teal", "Pink")
     }
 
     init {
@@ -33,9 +48,9 @@ class BrowserProfileStore(private val prefs: SharedPreferences) {
 
     fun get(id: String): BrowserProfile? = items.firstOrNull { it.id == id }
 
-    fun nameOf(id: String): String = if (id.isEmpty()) "Main" else get(id)?.name ?: "Profile"
+    fun nameOf(id: String): String = if (id.isEmpty()) mainName else get(id)?.name ?: "Profile"
 
-    fun colorOf(id: String): Int = get(id)?.color ?: 0xFF607D8B.toInt()
+    fun colorOf(id: String): Int = if (id.isEmpty()) mainColor else get(id)?.color ?: 0xFF607D8B.toInt()
 
     fun add(name: String): BrowserProfile {
         // letters and digits only: it becomes the engine's container id
