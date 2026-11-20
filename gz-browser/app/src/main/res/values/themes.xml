@@ -1,0 +1,22 @@
+<resources>
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/gbf_bg</item>
+        <item name="android:statusBarColor">@color/gbf_bg</item>
+        <item name="android:navigationBarColor">@color/gbf_bg</item>
+        <item name="android:alertDialogTheme">@style/GbfDialog</item>
+        <item name="android:colorAccent">#3FB7E8</item>
+    </style>
+
+    <style name="GbfDialog" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="android:textColorPrimary">#E6F6FF</item>
+        <item name="android:textColorSecondary">#9FC4DC</item>
+        <item name="android:colorAccent">#3FB7E8</item>
+    </style>
+
+    <style name="GbfSheet" parent="android:Theme.Material.Dialog">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+    </style>
+</resources>

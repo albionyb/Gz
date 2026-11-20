@@ -1,0 +1,9 @@
+.gradle/
+build/
+local.properties
+app/src/main/assets/blocklist_extra.txt
+
+*.keystore
+*.jks
+*.p12
+secrets-*.txt
