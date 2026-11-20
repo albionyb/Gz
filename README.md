@@ -44,5 +44,4 @@ A lightweight Android browser made for playing Granblue Fantasy. It is built on 
 - The app only loads the game's public website in a browser. It does not modify the game or automate gameplay.
 - Using third-party tools such as ad blockers, custom browsers or user-agent changes may go against the game's terms of service. Check the rules yourself and use this app **at your own risk**. The author is not responsible for any account action, data loss or other problems that result from using it.
 - Bookmarks, notes, history and settings are stored on your device.
-- The software is provided "as is", without warranty of
--  any kind.
+- The software is provided "as is", without warranty of any kind.
